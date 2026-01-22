@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Worm Gravity</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #111; overflow: hidden; touch-action: none; }
+        canvas { display: block; }
+    </style>
+    <!-- Подключаем PixiJS -->
+    <script src="https://pixijs.download/v7.3.2/pixi.min.js"></script>
+</head>
+<body>
+
+<script>
+// ==========================================
+// НАСТРОЙКИ PIXI (PIXEL ART)
+// ==========================================
+PIXI.BaseTexture.defaultOptions.scaleMode = PIXI.SCALE_MODES.NEAREST;
+
+// ==========================================
+// КОНФИГУРАЦИЯ
+// ==========================================
+const TILE_SIZE = 40;
+const TILE_GAP = 1; 
+const COLS = 20;
+const ROWS = 12;
+const GAME_WIDTH = COLS * TILE_SIZE;
+const GAME_HEIGHT = ROWS * TILE_SIZE;
+const PIXEL_GRID_DENSITY = 0; 
+
+const MOVE_DURATION = 0.15 * 1000; 
+const GRAVITY = 0.8 * (TILE_SIZE / 20); 
+const MAX_FALL_SPEED = 15 * (TILE_SIZE / 20);
+const FALL_LIMIT = GAME_HEIGHT + 600; 
+
+const TILE_EMPTY = 0;
+const TILE_WALL  = 1;
+const TILE_APPLE = 2;
+const TILE_BOX   = 3;
+const TILE_EXIT  = 9;
+
+const COLORS = {
+    bg: 0xCFCBC3,      
+    ink: 0x2B2623,     
+    apple: 0x2B2623,   
+    wormHead: 0x2B2623,
+    wormBody: 0x2B2623 
+};
+
+// ==========================================
+// ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+// ==========================================
+let app;
+let mainContainer; 
+let gameContainer; 
+let gridContainer; 
+let uiContainer;   
+
+let gameState = "MENU"; 
+let animState = "IDLE"; 
+
+// ОПРЕДЕЛЕНИЕ МОБИЛЬНОГО УСТРОЙСТВА
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+let currentLevelData = []; 
+let logicWorm = []; 
+let logicBoxes = []; 
+let boxIdCounter = 0;
+
+let visualWorm = []; 
+let visualBoxes = []; 
+let prevWormCoords = []; 
+
+let animTimer = 0;
+let fallVelocity = 0;
+let lastMoveDir = {x: 1, y: 0}; 
+
+let currentLevelIndex = 1;
+let maxUnlockedLevel = 1;
+const MAX_LEVELS_CHECK = 50; 
+let availableLevels = []; 
+
+const textures = {};
+const graphics = new PIXI.Graphics();
+const gridGraphics = new PIXI.Graphics(); 
+
+// ==========================================
+// ИНИЦИАЛИЗАЦИЯ
+// ==========================================
+window.onload = async function() {
+    app = new PIXI.Application({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        backgroundColor: COLORS.bg, 
+        resolution: window.devicePixelRatio || 1,
+        autoDensity: true,
+        roundPixels: false 
+    });
+    document.body.appendChild(app.view);
+
+    mainContainer = new PIXI.Container();
+    app.stage.addChild(mainContainer);
+
+    gameContainer = new PIXI.Container();
+    gridContainer = new PIXI.Container(); 
+    
+    mainContainer.addChild(gameContainer);
+    mainContainer.addChild(gridContainer); 
+    
+    uiContainer = new PIXI.Container();
+    app.stage.addChild(uiContainer); 
+    
+    await loadAssets();
+    loadProgress();
+    await scanLevels();
+    setupInput();
+
+    window.addEventListener('resize', onResize);
+    drawPixelGrid();
+    onResize();
+
+    app.ticker.add(update);
+    initMenu();
+};
+
+async function loadAssets() {
+    const loader = PIXI.Assets;
+    const assets = {
+        apple: 'images/apple.png',
+        box: 'images/box.png',
+        portal: 'images/portal.png',
+        wall: 'images/wall.png',
+        head: 'images/head.png',
+        body: 'images/body.png'
+    };
+
+    for (const [key, path] of Object.entries(assets)) {
+        try {
+            textures[key] = await loader.load(path);
+        } catch (e) {
+            console.warn(`Image ${path} not found, using shapes.`);
+            textures[key] = null;
+        }
+    }
+}
+
+function loadProgress() {
+    const saved = localStorage.getItem('worm_game_level');
+    if (saved) maxUnlockedLevel = parseInt(saved, 10);
+    else maxUnlockedLevel = 1;
+}
+
+function saveProgress(lvl) {
+    if (lvl > maxUnlockedLevel) {
+        maxUnlockedLevel = lvl;
+        localStorage.setItem('worm_game_level', maxUnlockedLevel);
+    }
+}
+
+async function scanLevels() {
+    availableLevels = [];
+    for (let i = 1; i <= MAX_LEVELS_CHECK; i++) {
+        try {
+            const response = await fetch(`levels/${i}.txt`);
+            if (response.ok) availableLevels.push(i);
+            else break; 
+        } catch (e) { break; }
+    }
+    if (availableLevels.length === 0) availableLevels.push("TEST");
+}
+
+// ==========================================
+// ЛОГИКА
+// ==========================================
+function deepCopy(obj) { return JSON.parse(JSON.stringify(obj)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+async function loadLevel(indexOrName) {
+    let textData = "";
+    if (indexOrName === "TEST") {
+        textData = 
+        "11111111111111111111\n1S.................1\n1..2...............1\n1.....3............1\n1111111.....3......1\n1.....1...11111....1\n1.....1............1\n1..2..1............1\n1111111.......9....1\n1..................1\n1..................1\n11111111111111111111";
+    } else {
+        try {
+            const response = await fetch(`levels/${indexOrName}.txt`);
+            if (!response.ok) throw new Error("Level not found");
+            textData = await response.text();
+        } catch (e) {
+            console.error("Failed to load level", indexOrName);
+            initMenu();
+            return;
+        }
+    }
+
+    parseLevel(textData);
+    gameState = "PLAY";
+    animState = "IDLE";
+    lastMoveDir = {x: 1, y: 0}; 
+    syncVisuals();
+    renderGame();
+    // Вызываем renderUI чтобы отрисовать кнопку меню (если мы на мобилке)
+    renderUI();
+}
+
+function parseLevel(text) {
+    const lines = text.split(/\r?\n/);
+    currentLevelData = [];
+    logicBoxes = [];
+    boxIdCounter = 0;
+    logicWorm = [];
+    let startPos = {x: 1, y: 1};
+
+    for (let y = 0; y < ROWS; y++) {
+        let row = [];
+        let line = lines[y] || "";
+        for (let x = 0; x < COLS; x++) {
+            let char = line[x] || "0";
+            let tile = TILE_EMPTY;
+            if (char === "1") tile = TILE_WALL;
+            else if (char === "2") tile = TILE_APPLE;
+            else if (char === "9") tile = TILE_EXIT;
+            else if (char === "3") {
+                tile = TILE_EMPTY; boxIdCounter++; logicBoxes.push({ id: boxIdCounter, x: x, y: y });
+            } else if (char.toUpperCase() === "S") {
+                startPos = {x: x, y: y}; tile = TILE_EMPTY;
+            }
+            row.push(tile);
+        }
+        currentLevelData.push(row);
+    }
+    logicWorm = [ {x: startPos.x, y: startPos.y}, {x: startPos.x - 1, y: startPos.y} ];
+}
+
+function syncVisuals() {
+    visualWorm = logicWorm.map(s => ({ x: s.x * TILE_SIZE, y: s.y * TILE_SIZE }));
+    visualBoxes = logicBoxes.map(b => ({ id: b.id, x: b.x * TILE_SIZE, y: b.y * TILE_SIZE }));
+}
+
+function getBoxAt(x, y) { return logicBoxes.find(b => b.x === x && b.y === y); }
+function isSelfCollision(x, y, wormArr) {
+    const check = wormArr || logicWorm;
+    return check.some(s => s.x === x && s.y === y);
+}
+function hasSupport(objX, objY, checkWorm, checkBoxes) {
+    let belowY = objY + 1;
+    if (belowY >= ROWS) return false; 
+    
+    let tile = currentLevelData[belowY][objX];
+    if (tile === TILE_WALL || tile === TILE_APPLE) return true;
+    if (checkBoxes.some(b => b.x === objX && b.y === belowY)) return true;
+    if (checkWorm && isSelfCollision(objX, belowY, checkWorm)) return true;
+    return false;
+}
+
+function resolvePhysics() {
+    let somethingMoved = false;
+    let stable = false;
+    let loops = 0;
+    while (!stable && loops < 50) {
+        stable = true; loops++;
+        let wormSupported = false;
+        
+        for (let s of logicWorm) {
+            if (hasSupport(s.x, s.y, null, logicBoxes)) { wormSupported = true; break; }
+        }
+        if (!wormSupported) {
+            for (let s of logicWorm) s.y += 1;
+            somethingMoved = true; stable = false;
+        }
+
+        logicBoxes.sort((a, b) => b.y - a.y); 
+        for (let b of logicBoxes) {
+            if (!hasSupport(b.x, b.y, logicWorm, logicBoxes)) {
+                b.y += 1; somethingMoved = true; stable = false;
+            }
+        }
+    }
+    return somethingMoved;
+}
+
+function tryMove(dx, dy) {
+    if (animState !== "IDLE") return;
+    if (dx === -lastMoveDir.x && dy === -lastMoveDir.y) return;
+
+    let head = logicWorm[0];
+    let newX = head.x + dx; let newY = head.y + dy;
+    
+    if (newX < 0 || newX >= COLS || newY < 0 || newY >= ROWS) return;
+    if (currentLevelData[newY][newX] === TILE_WALL) return;
+    
+    let box = getBoxAt(newX, newY);
+    if (box) {
+        let bx = newX + dx; let by = newY + dy;
+        if (bx < 0 || bx >= COLS || by < 0 || by >= ROWS) return;
+        let tNext = currentLevelData[by][bx];
+        let bNext = getBoxAt(bx, by);
+        let wNext = isSelfCollision(bx, by, logicWorm);
+        if (tNext === TILE_EMPTY && !bNext && !wNext) {
+            prevBoxCoords = deepCopy(visualBoxes);
+            box.x = bx; box.y = by;
+        } else return;
+    }
+    
+    if (isSelfCollision(newX, newY, logicWorm)) return;
+
+    let grow = (currentLevelData[newY][newX] === TILE_APPLE);
+    if (grow) currentLevelData[newY][newX] = TILE_EMPTY;
+
+    prevWormCoords = deepCopy(visualWorm);
+    logicWorm.unshift({x: newX, y: newY});
+    if (!grow) logicWorm.pop();
+    
+    lastMoveDir = {x: dx, y: dy};
+    animState = "CRAWLING"; animTimer = 0;
+}
+
+function update() {
+    const dt = app.ticker.elapsedMS; 
+    if (gameState === "PLAY") {
+        if (animState === "CRAWLING") {
+            animTimer += dt;
+            let t = animTimer / MOVE_DURATION;
+            if (t > 1) t = 1;
+            let easeT = -(Math.cos(Math.PI * t) - 1) / 2;
+            
+            visualWorm = [];
+            for (let i = 0; i < logicWorm.length; i++) {
+                let target = logicWorm[i];
+                let start = prevWormCoords[i];
+                if (!start) start = prevWormCoords[prevWormCoords.length - 1]; 
+                let tx = target.x * TILE_SIZE; let ty = target.y * TILE_SIZE;
+                visualWorm.push({ x: lerp(start.x, tx, easeT), y: lerp(start.y, ty, easeT) });
+            }
+            for (let b of logicBoxes) {
+                let visBox = visualBoxes.find(vb => vb.id === b.id);
+                if (visBox) {
+                    let tx = b.x * TILE_SIZE; let ty = b.y * TILE_SIZE;
+                    visBox.x = lerp(visBox.x, tx, 0.3);
+                    if (t === 1) { visBox.x = tx; visBox.y = ty; }
+                }
+            }
+            if (t === 1) {
+                syncVisuals();
+                let fell = resolvePhysics();
+                if (fell) { animState = "FALLING"; fallVelocity = 0; }
+                else { animState = "IDLE"; checkWin(); }
+            }
+            renderGame();
+        } else if (animState === "FALLING") {
+            fallVelocity += GRAVITY;
+            if (fallVelocity > MAX_FALL_SPEED) fallVelocity = MAX_FALL_SPEED;
+            
+            let allLanded = true;
+            let head = logicWorm[0];
+            let headTargetY = head.y * TILE_SIZE;
+            
+            if (head.y >= ROWS) {
+                for (let s of visualWorm) s.y += fallVelocity;
+                allLanded = false;
+                if (visualWorm[0].y > FALL_LIMIT) {
+                    gameState = "GAMEOVER"; 
+                    animState = "IDLE"; 
+                    renderUI();
+                }
+            } else {
+                let headVisY = visualWorm[0].y;
+                if (headVisY < headTargetY) {
+                    allLanded = false;
+                    for (let s of visualWorm) s.y += fallVelocity;
+                    if (visualWorm[0].y >= headTargetY) {
+                         let diff = visualWorm[0].y - headTargetY;
+                         for (let s of visualWorm) s.y -= diff; 
+                    }
+                }
+            }
+
+            for (let lb of logicBoxes) {
+                let targetY = lb.y * TILE_SIZE;
+                let isDeadBox = (lb.y >= ROWS); 
+                let vb = visualBoxes.find(v => v.id === lb.id);
+                
+                if (vb) {
+                    if (isDeadBox) {
+                        vb.y += fallVelocity;
+                        if (vb.y < FALL_LIMIT) allLanded = false;
+                    } else if (vb.y < targetY) {
+                        allLanded = false;
+                        vb.y += fallVelocity;
+                        if (vb.y >= targetY) vb.y = targetY;
+                    }
+                }
+            }
+
+            if (allLanded && gameState !== "GAMEOVER") {
+                animState = "IDLE"; 
+                syncVisuals();
+                checkWin();
+            }
+            renderGame();
+        }
+    }
+}
+
+function checkWin() {
+    let head = logicWorm[0];
+    if (head.y < ROWS && head.x >= 0 && head.x < COLS) {
+        if (currentLevelData[head.y][head.x] === TILE_EXIT) {
+            gameState = "WIN";
+            saveProgress(currentLevelIndex + 1);
+            renderUI();
+        }
+    }
+}
+
+// ==========================================
+// ОТРИСОВКА СЕТКИ
+// ==========================================
+function drawPixelGrid() {
+    gridGraphics.clear();
+    
+    gridGraphics.lineStyle({
+        width: 1, 
+        color: COLORS.bg, 
+        alpha: 1,
+        native: true 
+    });
+
+    const step = TILE_SIZE / PIXEL_GRID_DENSITY;
+    
+    for (let x = 0; x <= GAME_WIDTH; x += step) {
+        gridGraphics.moveTo(x, 0);
+        gridGraphics.lineTo(x, GAME_HEIGHT);
+    }
+    
+    for (let y = 0; y <= GAME_HEIGHT; y += step) {
+        gridGraphics.moveTo(0, y);
+        gridGraphics.lineTo(GAME_WIDTH, y);
+    }
+    
+    gridContainer.removeChildren();
+    gridContainer.addChild(gridGraphics);
+}
+
+// ==========================================
+// ОТРИСОВКА ИГРЫ
+// ==========================================
+function renderGame() {
+    gameContainer.removeChildren();
+    graphics.clear();
+    gameContainer.addChild(graphics);
+
+    graphics.beginFill(COLORS.bg);
+    graphics.drawRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    graphics.endFill();
+
+    function drawTileRectGap(g, x, y, color) {
+        g.beginFill(color);
+        g.drawRect(x + TILE_GAP, y + TILE_GAP, TILE_SIZE - TILE_GAP*2, TILE_SIZE - TILE_GAP*2);
+        g.endFill();
+    }
+
+    // Сетка объектов
+    for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            let tile = currentLevelData[y][x];
+            let px = x * TILE_SIZE; let py = y * TILE_SIZE;
+
+            if (tile === TILE_WALL) {
+                if (textures.wall) {
+                    let s = new PIXI.Sprite(textures.wall);
+                    s.x = px; s.y = py; 
+                    s.width = s.height = TILE_SIZE;
+                    gameContainer.addChild(s);
+                } else {
+                    graphics.beginFill(COLORS.ink);
+                    graphics.drawRect(px, py, TILE_SIZE, TILE_SIZE);
+                    graphics.endFill();
+                }
+            } else if (tile === TILE_APPLE) {
+                if (textures.apple) {
+                    let s = new PIXI.Sprite(textures.apple);
+                    s.x = px + TILE_GAP; s.y = py + TILE_GAP; 
+                    s.width = s.height = TILE_SIZE - TILE_GAP*2;
+                    gameContainer.addChild(s);
+                } else {
+                    graphics.beginFill(COLORS.apple); 
+                    graphics.drawCircle(px + TILE_SIZE/2, py + TILE_SIZE/2, (TILE_SIZE/3) - 1); 
+                    graphics.endFill();
+                }
+            } else if (tile === TILE_EXIT) {
+                if (textures.portal) {
+                    let s = new PIXI.Sprite(textures.portal);
+                    s.x = px + TILE_GAP; s.y = py + TILE_GAP; 
+                    s.width = s.height = TILE_SIZE - TILE_GAP*2;
+                    gameContainer.addChild(s);
+                } else {
+                    graphics.lineStyle(2, COLORS.ink); 
+                    graphics.drawRect(px + 10, py + 10, TILE_SIZE - 20, TILE_SIZE - 20); 
+                    graphics.lineStyle(0);
+                }
+            }
+        }
+    }
+
+    // Коробки (с GAP)
+    for (let b of visualBoxes) {
+        if (textures.box) {
+            let s = new PIXI.Sprite(textures.box);
+            s.x = b.x + TILE_GAP; s.y = b.y + TILE_GAP; 
+            s.width = s.height = TILE_SIZE - TILE_GAP*2; 
+            gameContainer.addChild(s);
+        } else {
+            drawTileRectGap(graphics, b.x, b.y, COLORS.ink);
+            graphics.lineStyle(2, COLORS.bg); 
+            graphics.drawRect(b.x + TILE_GAP, b.y + TILE_GAP, TILE_SIZE - TILE_GAP*2, TILE_SIZE - TILE_GAP*2); 
+            graphics.lineStyle(0);
+        }
+    }
+
+    // Червь (с GAP)
+    for (let i = 0; i < visualWorm.length; i++) {
+        let s = visualWorm[i];
+        
+        if (i === 0 && textures.head) {
+            let spr = new PIXI.Sprite(textures.head);
+            spr.width = TILE_SIZE - TILE_GAP*2; 
+            spr.height = TILE_SIZE - TILE_GAP*2;
+            spr.anchor.set(0.5);
+            spr.x = s.x + TILE_SIZE / 2;
+            spr.y = s.y + TILE_SIZE / 2;
+            spr.angle = 0; 
+            gameContainer.addChild(spr);
+        } else if (i > 0 && textures.body) {
+            let spr = new PIXI.Sprite(textures.body);
+            spr.width = TILE_SIZE - TILE_GAP*2; 
+            spr.height = TILE_SIZE - TILE_GAP*2;
+            spr.x = s.x + TILE_GAP; spr.y = s.y + TILE_GAP;
+            gameContainer.addChild(spr);
+        } else {
+            graphics.beginFill(i === 0 ? COLORS.wormHead : COLORS.wormBody);
+            graphics.drawRect(s.x + TILE_GAP, s.y + TILE_GAP, TILE_SIZE - TILE_GAP*2, TILE_SIZE - TILE_GAP*2);
+            graphics.endFill();
+        }
+    }
+}
+
+function initMenu() {
+    gameState = "MENU";
+    renderUI();
+}
+
+function triggerEndGameAction() {
+    let nextLvlExists = availableLevels.includes(currentLevelIndex + 1);
+    if (gameState === "WIN" && nextLvlExists) {
+        currentLevelIndex++;
+        loadLevel(currentLevelIndex);
+    } else {
+        initMenu();
+    }
+}
+
+function renderUI() {
+    uiContainer.removeChildren();
+
+    const styleTitle = new PIXI.TextStyle({ fontFamily: 'Courier New', fontSize: 36, fill: COLORS.ink, fontWeight: 'bold', align: 'center' });
+    const styleItem = new PIXI.TextStyle({ fontFamily: 'Courier New', fontSize: 24, fill: COLORS.ink, align: 'center' });
+
+    // КНОПКА МЕНЮ ДЛЯ МОБИЛЬНЫХ (В ИГРЕ)
+    if (gameState === "PLAY" && isTouchDevice) {
+        const btnSize = 50;
+        const btn = new PIXI.Graphics();
+        
+        // Фон кнопки
+        btn.beginFill(COLORS.bg);
+        btn.lineStyle(4, COLORS.ink);
+        btn.drawRect(0, 0, btnSize, btnSize);
+        btn.endFill();
+
+        // Иконка (Гамбургер)
+        btn.lineStyle(4, COLORS.ink);
+        btn.moveTo(10, 15); btn.lineTo(btnSize - 10, 15);
+        btn.moveTo(10, 25); btn.lineTo(btnSize - 10, 25);
+        btn.moveTo(10, 35); btn.lineTo(btnSize - 10, 35);
+
+        // Позиция
+        btn.x = 20;
+        btn.y = 20;
+
+        btn.eventMode = 'static';
+        btn.cursor = 'pointer';
+        btn.on('pointerdown', initMenu);
+
+        uiContainer.addChild(btn);
+    }
+
+    if (gameState === "MENU") {
+        const bg = new PIXI.Graphics();
+        bg.beginFill(COLORS.bg);
+        bg.drawRect(0, 0, app.screen.width, app.screen.height);
+        uiContainer.addChild(bg);
+
+        let title = new PIXI.Text("WORM GRAVITY", styleTitle);
+        title.anchor.set(0.5); title.x = app.screen.width / 2; title.y = 80;
+        uiContainer.addChild(title);
+
+        let y = 150;
+        availableLevels.forEach((lvl) => {
+            let label = `LEVEL ${lvl}`;
+            let isNumeric = (typeof lvl === 'number');
+            let isDone = isNumeric && (lvl < maxUnlockedLevel);
+            let isUnlocked = isNumeric && (lvl < maxUnlockedLevel + 3);
+            if (lvl === "TEST") isUnlocked = true;
+
+            let displayText = label;
+            let interactive = false;
+            let alpha = 1;
+
+            if (isDone) { displayText += " [DONE]"; interactive = true; }
+            else if (isUnlocked) { interactive = true; }
+            else { displayText += " [LOCKED]"; interactive = false; alpha = 0.4; }
+
+            let item = new PIXI.Text(displayText, styleItem);
+            item.anchor.set(0.5); item.x = app.screen.width / 2; item.y = y;
+            item.alpha = alpha;
+            
+            if (interactive) {
+                item.eventMode = 'static';
+                item.cursor = 'pointer';
+                item.on('pointerdown', () => {
+                    currentLevelIndex = lvl;
+                    loadLevel(currentLevelIndex);
+                });
+            }
+            uiContainer.addChild(item);
+            y += 40;
+        });
+
+    } else if (gameState === "GAMEOVER" || gameState === "WIN") {
+        let box = new PIXI.Graphics();
+        box.beginFill(COLORS.ink, 0.9);
+        box.lineStyle(4, COLORS.bg);
+        box.drawRect(app.screen.width/2 - 150, app.screen.height/2 - 100, 300, 200);
+        uiContainer.addChild(box);
+
+        let txt = (gameState === "WIN") ? "VICTORY!" : "GAME OVER";
+        let styleInv = new PIXI.TextStyle({ fontFamily: 'Courier New', fontSize: 36, fill: COLORS.bg, fontWeight: 'bold', align: 'center' });
+        let styleInvSmall = new PIXI.TextStyle({ fontFamily: 'Courier New', fontSize: 24, fill: COLORS.bg, align: 'center' });
+
+        let title = new PIXI.Text(txt, styleInv);
+        title.anchor.set(0.5); title.x = app.screen.width / 2; title.y = app.screen.height / 2 - 40;
+        uiContainer.addChild(title);
+
+        let subTxt = "Tap to Menu";
+        let nextLvlExists = availableLevels.includes(currentLevelIndex + 1);
+        if (gameState === "WIN" && nextLvlExists) subTxt = "Tap / Space for Next";
+        else if (gameState === "WIN") subTxt = "ALL DONE!";
+        
+        let sub = new PIXI.Text(subTxt, styleInvSmall);
+        sub.anchor.set(0.5); sub.x = app.screen.width / 2; sub.y = app.screen.height / 2 + 40;
+        uiContainer.addChild(sub);
+
+        const fullScreenHit = new PIXI.Graphics();
+        fullScreenHit.beginFill(0xFFFFFF, 0.001);
+        fullScreenHit.drawRect(0, 0, app.screen.width, app.screen.height);
+        fullScreenHit.endFill();
+        fullScreenHit.eventMode = 'static';
+        fullScreenHit.cursor = 'pointer';
+        
+        fullScreenHit.on('pointerdown', triggerEndGameAction);
+        uiContainer.addChild(fullScreenHit);
+    }
+}
+
+function setupInput() {
+    window.addEventListener('keydown', (e) => {
+        if (gameState === "WIN" || gameState === "GAMEOVER") {
+            if (e.code === "Space" || e.code === "Enter") {
+                triggerEndGameAction();
+                return;
+            }
+        }
+        if (gameState !== "PLAY") return;
+        switch(e.code) {
+            case 'ArrowUp': case 'KeyW': tryMove(0, -1); break;
+            case 'ArrowDown': case 'KeyS': tryMove(0, 1); break;
+            case 'ArrowLeft': case 'KeyA': tryMove(-1, 0); break;
+            case 'ArrowRight': case 'KeyD': tryMove(1, 0); break;
+            case 'Escape': initMenu(); break;
+        }
+    });
+
+    let touchStartX = 0; let touchStartY = 0;
+    document.addEventListener('touchstart', (e) => {
+        touchStartX = e.changedTouches[0].screenX;
+        touchStartY = e.changedTouches[0].screenY;
+    }, {passive: false});
+
+    document.addEventListener('touchend', (e) => {
+        if (gameState !== "PLAY") return;
+        let dx = e.changedTouches[0].screenX - touchStartX;
+        let dy = e.changedTouches[0].screenY - touchStartY;
+        // Кнопка меню обрабатывается своим событием, здесь логика свайпов
+        // Если тап был в углу кнопки (x < 100, y < 100), можно игнорировать свайп, 
+        // но PIXI обработает pointerdown раньше, так что конфликтов быть не должно.
+        
+        if (Math.abs(dx) > Math.abs(dy)) {
+            if (Math.abs(dx) > 30) dx > 0 ? tryMove(1, 0) : tryMove(-1, 0);
+        } else {
+            if (Math.abs(dy) > 30) dy > 0 ? tryMove(0, 1) : tryMove(0, -1);
+        }
+    }, {passive: false});
+}
+
+function onResize() {
+    app.renderer.resize(window.innerWidth, window.innerHeight);
+    const scaleX = window.innerWidth / GAME_WIDTH;
+    const scaleY = window.innerHeight / GAME_HEIGHT;
+    const scale = Math.min(scaleX, scaleY) * 0.95;
+    
+    mainContainer.scale.set(scale);
+    mainContainer.x = (window.innerWidth - GAME_WIDTH * scale) / 2;
+    mainContainer.y = (window.innerHeight - GAME_HEIGHT * scale) / 2;
+
+    if (gameState === "MENU") initMenu();
+    // Если мы в игре и ресайзим, перерисовать UI чтобы кнопка не пропала (хотя она в UI слое)
+    if (gameState === "PLAY") renderUI();
+}
+</script>
+
+</body>
+</html>

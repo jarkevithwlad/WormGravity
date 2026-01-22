@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Apple Worm Editor v3 (Fixed)</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --sidebar-color: #252526;
+            --activity-bar: #333333;
+            --accent-color: #007acc;
+            --text-color: #cccccc;
+            --grid-line: #3e3e3e;
+            --tile-wall: #000000;
+            --tile-apple: #ff5555;
+            --tile-exit: #4ec9b0;
+            --tile-box: #cd853f;
+            --worm-color: #9cdcfe;
+            --worm-head: #dcdcaa;
+        }
+
+        body {
+            margin: 0; padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Consolas', 'Monaco', monospace;
+            display: flex; height: 100vh;
+            overflow: hidden; user-select: none;
+        }
+
+        /* Layout */
+        #activity-bar { width: 50px; background-color: var(--activity-bar); display: flex; flex-direction: column; align-items: center; padding-top: 10px; }
+        #sidebar { width: 250px; background-color: var(--sidebar-color); padding: 20px; box-sizing: border-box; border-right: 1px solid #000; display: flex; flex-direction: column; }
+        #main-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: var(--bg-color); position: relative; }
+        #status-bar { height: 22px; background-color: var(--accent-color); color: white; font-size: 12px; display: flex; align-items: center; padding: 0 10px; position: absolute; bottom: 0; width: 100%; }
+
+        /* Tools */
+        h2 { font-size: 14px; text-transform: uppercase; margin-bottom: 10px; color: #bbb; }
+        .tool-btn { display: flex; align-items: center; width: 100%; padding: 8px; margin-bottom: 5px; cursor: pointer; border-radius: 3px; border: 1px solid transparent; transition: background 0.2s; box-sizing: border-box; }
+        .tool-btn:hover { background-color: #2a2d2e; }
+        .tool-btn.active { background-color: #37373d; border-color: #454545; }
+
+        .icon { width: 20px; height: 20px; margin-right: 10px; border-radius: 3px; }
+        .icon.wall { background-color: var(--tile-wall); border: 1px solid #555; }
+        .icon.apple { background-color: var(--tile-apple); border-radius: 50%; }
+        .icon.box { background-color: var(--tile-box); border: 1px solid #8b4513; }
+        .icon.exit { border: 2px solid var(--tile-exit); box-sizing: border-box; }
+        .icon.start { background-color: var(--worm-head); }
+        .icon.erase { border: 1px dashed #666; }
+
+        /* Grid */
+        #game-container { position: relative; border: 1px solid #444; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        #grid { display: grid; grid-template-columns: repeat(20, 30px); grid-template-rows: repeat(12, 30px); background-color: #111; }
+
+        .cell { width: 30px; height: 30px; border: 1px solid var(--grid-line); box-sizing: border-box; display: flex; align-items: center; justify-content: center; position: relative; }
+        .cell.wall { background-color: var(--tile-wall); border-color: #000; }
+        .cell.apple::after { content: ''; width: 16px; height: 16px; background: var(--tile-apple); border-radius: 50%; box-shadow: inset -2px -2px 0 rgba(0,0,0,0.3); }
+        .cell.box { background-color: var(--tile-box); border: 2px solid #8b4513; }
+        .cell.box::after { content: 'X'; color: #5e2f0d; font-weight: bold; font-size: 18px; }
+        .cell.exit { border: 3px solid var(--tile-exit); }
+        .cell.start { background-color: rgba(220, 220, 170, 0.3); }
+        .cell.start::after { content: 'S'; color: var(--worm-head); font-weight: bold; }
+
+        /* Worm */
+        .worm-segment { position: absolute; width: 30px; height: 30px; background-color: var(--worm-color); border-radius: 5px; pointer-events: none; z-index: 10; }
+        .worm-segment.head { background-color: var(--worm-head); }
+
+        /* Actions */
+        .action-btn { width: 100%; padding: 8px; margin-top: 10px; background-color: #0e639c; color: white; border: none; cursor: pointer; font-family: inherit; }
+        .action-btn.secondary { background-color: #3a3d41; }
+
+        #message-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 20; display: none; }
+        #message-text { font-size: 24px; margin-bottom: 20px; color: white; }
+    </style>
+</head>
+<body>
+
+    <div id="activity-bar">
+        <div style="width: 30px; height: 30px; border-left: 2px solid white; margin-bottom: 10px;"></div>
+    </div>
+
+    <div id="sidebar">
+        <h3 style="margin-top: 0;">EXPLORER</h3>
+        
+        <h2>Toolbox</h2>
+        <div class="tool-btn active" onclick="setTool('1')"><div class="icon wall"></div> Wall</div>
+        <div class="tool-btn" onclick="setTool('2')"><div class="icon apple"></div> Apple</div>
+        <div class="tool-btn" onclick="setTool('3')"><div class="icon box"></div> Box</div>
+        <div class="tool-btn" onclick="setTool('9')"><div class="icon exit"></div> Exit</div>
+        <div class="tool-btn" onclick="setTool('S')"><div class="icon start"></div> Start Pos</div>
+        <div class="tool-btn" onclick="setTool('0')"><div class="icon erase"></div> Eraser</div>
+
+        <div style="margin-top: auto;">
+            <h2>Actions</h2>
+            <button class="action-btn" id="playBtn" onclick="togglePlay()">RUN (Play)</button>
+            <button class="action-btn secondary" onclick="downloadLevel()">EXPORT .TXT</button>
+            <button class="action-btn secondary" onclick="clearGrid()">CLEAR GRID</button>
+        </div>
+    </div>
+
+    <div id="main-area">
+        <div id="game-container">
+            <div id="grid"></div>
+            <div id="message-overlay">
+                <div id="message-text">GAME OVER</div>
+                <button class="action-btn" style="width: auto; padding: 5px 20px;" onclick="stopGame()">EDIT MODE</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="status-bar">
+        <span>Ln 1, Col 1</span>
+        <span style="margin-left: auto;">Playdate Lua</span>
+        <span style="margin-left: 10px; background: #005f9e; padding: 0 5px;" id="mode-indicator">EDITOR</span>
+    </div>
+
+<script>
+    const ROWS = 12;
+    const COLS = 20;
+    const TILE_SIZE = 30;
+
+    let gridData = [];
+    let currentTool = '1';
+    let isDrawing = false;
+    let mode = 'EDITOR'; // 'EDITOR' or 'PLAY'
+    
+    // Game State
+    let worm = [];
+    let gameLevel = []; // Actual level state during play
+    let gameState = "PLAY";
+    let lastMoveDir = {x: 1, y: 0};
+    let physicsInterval = null;
+
+    // --- EDITOR ---
+    function initGrid() {
+        const gridEl = document.getElementById('grid');
+        gridEl.innerHTML = '';
+        gridData = [];
+
+        for (let r = 0; r < ROWS; r++) {
+            let row = [];
+            for (let c = 0; c < COLS; c++) {
+                row.push('0');
+                const cell = document.createElement('div');
+                cell.classList.add('cell');
+                cell.dataset.r = r;
+                cell.dataset.c = c;
+                
+                cell.addEventListener('mousedown', (e) => {
+                    isDrawing = true;
+                    if (e.button === 2) paint(r, c, '0');
+                    else paint(r, c, currentTool);
+                });
+                cell.addEventListener('mouseenter', (e) => {
+                    if (isDrawing) {
+                        if (e.buttons === 2) paint(r, c, '0');
+                        else paint(r, c, currentTool);
+                    }
+                });
+                
+                gridEl.appendChild(cell);
+            }
+            gridData.push(row);
+        }
+
+        // Defaults
+        paint(8, 6, 'S');
+        for(let i=0; i<8; i++) paint(9, 4+i, '1');
+        paint(8, 10, '2');
+        paint(5, 12, '9');
+    }
+
+    document.addEventListener('mouseup', () => isDrawing = false);
+    document.getElementById('grid').addEventListener('contextmenu', e => e.preventDefault());
+
+    function setTool(tool) {
+        currentTool = tool;
+        document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+        const btns = Array.from(document.querySelectorAll('.tool-btn'));
+        const activeBtn = btns.find(b => b.getAttribute('onclick').includes(tool));
+        if (activeBtn) activeBtn.classList.add('active');
+    }
+
+    function paint(r, c, type) {
+        if (mode !== 'EDITOR') return;
+        if (type === 'S') {
+            for(let y=0; y<ROWS; y++) for(let x=0; x<COLS; x++) {
+                if (gridData[y][x] === 'S') { gridData[y][x] = '0'; updateCellVisual(y, x); }
+            }
+        }
+        gridData[r][c] = type;
+        updateCellVisual(r, c);
+    }
+
+    // --- CRITICAL FIX: Render based on Mode ---
+    function updateCellVisual(r, c) {
+        const index = r * COLS + c;
+        const cell = document.getElementById('grid').children[index];
+        cell.className = 'cell';
+        
+        // ВАЖНО: Если мы играем, берем данные из gameLevel, если редактируем - из gridData
+        let val;
+        if (mode === 'PLAY') {
+            val = gameLevel[r][c];
+        } else {
+            val = gridData[r][c];
+        }
+
+        if (val === '1') cell.classList.add('wall');
+        if (val === '2') cell.classList.add('apple');
+        if (val === '3') cell.classList.add('box');
+        if (val === '9') cell.classList.add('exit');
+        if (val === 'S' && mode === 'EDITOR') cell.classList.add('start'); // Прячем S при игре
+    }
+
+    function clearGrid() {
+        if (!confirm("Clear grid?")) return;
+        for(let r=0; r<ROWS; r++) for(let c=0; c<COLS; c++) {
+            gridData[r][c] = '0'; updateCellVisual(r, c);
+        }
+    }
+
+    function downloadLevel() {
+        let text = "";
+        for(let r=0; r<ROWS; r++) text += gridData[r].join('') + "\n";
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = "level.txt"; a.click();
+        window.URL.revokeObjectURL(url);
+    }
+
+    // --- GAME ENGINE ---
+    function togglePlay() {
+        if (mode === 'EDITOR') startGame(); else stopGame();
+    }
+
+    function startGame() {
+        let startPos = null;
+        for(let r=0; r<ROWS; r++) for(let c=0; c<COLS; c++) {
+            if (gridData[r][c] === 'S') startPos = {x: c, y: r};
+        }
+        if (!startPos) { alert("Place 'Start Pos' (S) first!"); return; }
+
+        mode = 'PLAY'; // Переключаем режим ПЕРЕД копированием данных
+        document.getElementById('playBtn').textContent = "STOP (Esc)";
+        document.getElementById('mode-indicator').textContent = "DEBUGGING";
+        document.getElementById('mode-indicator').style.background = "#d65d0e";
+        document.getElementById('message-overlay').style.display = 'none';
+
+        // Инициализируем уровень копией из редактора
+        gameLevel = gridData.map(row => [...row]);
+        
+        // Обновляем визуализацию всего поля (чтобы S исчезла, и состояние зафиксировалось)
+        for(let r=0; r<ROWS; r++) for(let c=0; c<COLS; c++) updateCellVisual(r, c);
+
+        worm = [{x: startPos.x, y: startPos.y}, {x: startPos.x - 1, y: startPos.y}];
+        lastMoveDir = {x: 1, y: 0};
+        gameState = "PLAY";
+        
+        drawGameElements();
+        document.addEventListener('keydown', handleInput);
+        if (physicsInterval) clearInterval(physicsInterval);
+        physicsInterval = setInterval(gameLoop, 100); 
+    }
+
+    function stopGame() {
+        mode = 'EDITOR';
+        document.getElementById('playBtn').textContent = "RUN (Play)";
+        document.getElementById('mode-indicator').textContent = "EDITOR";
+        document.getElementById('mode-indicator').style.background = "#005f9e";
+        document.getElementById('message-overlay').style.display = 'none';
+        
+        document.querySelectorAll('.worm-segment').forEach(el => el.remove());
+        
+        // Restore grid visual from gridData
+        for(let r=0; r<ROWS; r++) for(let c=0; c<COLS; c++) updateCellVisual(r, c);
+
+        document.removeEventListener('keydown', handleInput);
+        if (physicsInterval) clearInterval(physicsInterval);
+    }
+
+    function handleInput(e) {
+        if (gameState !== "PLAY") { if (e.key === "Escape") stopGame(); return; }
+        if (e.key === "Escape") { stopGame(); return; }
+
+        let dx = 0, dy = 0;
+        if (e.key === "ArrowUp") dy = -1;
+        else if (e.key === "ArrowDown") dy = 1;
+        else if (e.key === "ArrowLeft") dx = -1;
+        else if (e.key === "ArrowRight") dx = 1;
+        else return;
+
+        moveWorm(dx, dy);
+        drawGameElements();
+    }
+
+    function isSelfCollision(x, y) {
+        for (let p of worm) if (p.x === x && p.y === y) return true;
+        return false;
+    }
+
+    function inBounds(x, y) { return x >= 0 && x < COLS && y >= 0 && y < ROWS; }
+
+    function objectHasSupport(objX, objY) {
+        let belowY = objY + 1;
+        if (belowY >= ROWS) return false;
+        let tile = gameLevel[belowY][objX];
+        // Яблоко ('2'), Стена ('1'), Ящик ('3') - всё это опоры
+        if (tile === '1' || tile === '2' || tile === '3') return true;
+        return false;
+    }
+
+    function checkWormSupport() {
+        for (let segment of worm) {
+            if (objectHasSupport(segment.x, segment.y)) return true;
+        }
+        return false;
+    }
+
+    function updateBoxPhysics() {
+        let somethingFell = false;
+        for (let y = ROWS - 2; y >= 0; y--) {
+            for (let x = 0; x < COLS; x++) {
+                if (gameLevel[y][x] === '3') {
+                    let belowY = y + 1;
+                    let tileBelow = gameLevel[belowY][x];
+                    let wormBelow = isSelfCollision(x, belowY);
+
+                    if ((tileBelow === '0' || tileBelow === 'S') && !wormBelow) {
+                        gameLevel[belowY][x] = '3';
+                        gameLevel[y][x] = '0';
+                        somethingFell = true;
+                        updateCellVisual(y, x);
+                        updateCellVisual(belowY, x);
+                    } else if (belowY === ROWS) {
+                         gameLevel[y][x] = '0'; // fell out
+                         updateCellVisual(y, x);
+                    }
+                }
+            }
+        }
+        return somethingFell;
+    }
+
+    function moveWorm(dx, dy) {
+        if (dx === -lastMoveDir.x && dy === -lastMoveDir.y) return;
+
+        let head = worm[0];
+        let newX = head.x + dx;
+        let newY = head.y + dy;
+
+        if (!inBounds(newX, newY)) return; 
+
+        let tile = gameLevel[newY][newX];
+        
+        // BOX LOGIC
+        if (tile === '3') {
+            let boxNextX = newX + dx;
+            let boxNextY = newY + dy;
+            if (!inBounds(boxNextX, boxNextY)) return;
+
+            let nextTile = gameLevel[boxNextY][boxNextX];
+            if ((nextTile === '0' || nextTile === 'S') && !isSelfCollision(boxNextX, boxNextY)) {
+                gameLevel[boxNextY][boxNextX] = '3';
+                gameLevel[newY][newX] = '0'; 
+                updateCellVisual(boxNextY, boxNextX); 
+                updateCellVisual(newY, newX); 
+                tile = '0'; // Treated as empty now
+            } else {
+                return; // Blocked
+            }
+        }
+
+        if (tile === '1' || tile === '3') return; 
+        if (tile === '9') { gameState = "WIN"; showMessage("LEVEL PASSED!"); return; }
+
+        let grow = (tile === '2');
+        if (grow) {
+            gameLevel[newY][newX] = '0'; 
+            updateCellVisual(newY, newX); // Apple Disappears Visually
+        }
+
+        if (isSelfCollision(newX, newY)) return;
+
+        worm.unshift({x: newX, y: newY});
+        if (!grow) worm.pop();
+        lastMoveDir = {x: dx, y: dy};
+
+        // Check physics after move
+        if (!checkWormSupport() || updateBoxPhysics()) {
+            gameState = "FALLING";
+        }
+    }
+
+    function gameLoop() {
+        if (gameState === "FALLING") {
+            if (!checkWormSupport()) {
+                worm.forEach(s => s.y += 1);
+                if (worm[0].y >= ROWS) {
+                    gameState = "GAMEOVER";
+                    showMessage("GAME OVER");
+                }
+            }
+            
+            let boxesFell = updateBoxPhysics();
+
+            if (checkWormSupport() && !boxesFell) {
+                gameState = "PLAY";
+            }
+            drawGameElements();
+        }
+    }
+
+    function drawGameElements() {
+        document.querySelectorAll('.worm-segment').forEach(el => el.remove());
+        worm.forEach((seg, index) => {
+            if (!inBounds(seg.x, seg.y)) return;
+            const div = document.createElement('div');
+            div.className = 'worm-segment';
+            if (index === 0) div.classList.add('head');
+            div.style.left = (seg.x * TILE_SIZE) + 'px';
+            div.style.top = (seg.y * TILE_SIZE) + 'px';
+            document.getElementById('game-container').appendChild(div);
+        });
+    }
+
+    function showMessage(msg) {
+        const overlay = document.getElementById('message-overlay');
+        document.getElementById('message-text').textContent = msg;
+        overlay.style.display = 'flex';
+    }
+
+    initGrid();
+</script>
+</body>
+</html>
